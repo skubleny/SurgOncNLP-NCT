@@ -1,0 +1,1162 @@
+---
+title: "Surgical Oncology NLP Models"
+output: html_document
+date: "2025-05-08"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+library(tensorflow)
+tf$constant("Hello Tensorflow!")
+library(Rmisc)
+require(quanteda)
+library(tidytext)
+library(umap)
+library(seededlda)
+library(NMF)
+library(lda)
+library(ldatuning)
+library(flextable)
+library(topicmodels)
+library(reshape2)
+library(ggplot2)
+#library(tensorflow)
+library(reticulate)
+library(keras)
+library(keras3)
+library(caret)
+library("quanteda.textstats")
+library(readtext)
+require(quanteda.textmodels)
+require(glmnet)
+library(textrecipes)
+library(mltools)
+library(text2vec)
+library(rsample)
+library(purrr)
+library(stringr)
+library(dplyr)
+
+
+keras_predict <- function(model, baked_data, response) {
+  predictions <- predict(model, baked_data)[, 1]
+  tibble(
+    .pred_1 = predictions,
+    .pred_class = if_else(.pred_1 < 0.5, 0, 1),
+    state = response
+  ) %>%
+    mutate(across(c(state, .pred_class),            ## create factors
+                  ~ factor(.x, levels = c(1, 0))))  ## with matching levels
+}
+
+
+```
+
+#Set Keras Seed
+```{r}
+set_random_seed(25)
+
+```
+#Download Training Data 
+```{r}
+
+# Create a temporary file and directory
+zip_path <- tempfile(fileext = ".zip")
+unzip_dir <- tempdir()
+
+# Download the zip file
+download.file("https://github.com/skubleny/SurgOncNLP-NCT/raw/main/Data/training_set_mesh_pre_CV.csv.zip",
+              destfile = zip_path, mode = "wb")
+
+# Unzip it
+unzip(zip_path, exdir = unzip_dir)
+unzipped_files <- list.files(unzip_dir, full.names = TRUE)
+print(unzipped_files)
+target_file <- unzipped_files[grepl("training_set_mesh.*\\.csv$", basename(unzipped_files), ignore.case = TRUE)]
+
+
+training_set_mesh <- read.csv(target_file, row.names = 1)
+
+unlink(unzip_dir, recursive = TRUE)  # folder
+```
+
+#Establish CV folds for Surgical Oncology  
+
+```{r}
+trainRowNumbers = createDataPartition(training_set_mesh$surg_onc, p=0.8,list=FALSE,times = 5)
+trainRowNumbers = as.data.frame(trainRowNumbers)
+```
+
+#Training, Test and Validate data sets
+```{r}
+df_training1 <- subset(training_set_mesh, id %in% trainRowNumbers$Resample1)
+df_training2 <- subset(training_set_mesh, id %in% trainRowNumbers$Resample2)
+df_training3 <- subset(training_set_mesh, id %in% trainRowNumbers$Resample3)
+df_training4 <- subset(training_set_mesh, id %in% trainRowNumbers$Resample4)
+df_training5 <- subset(training_set_mesh, id %in% trainRowNumbers$Resample5)
+
+df_test1 <- subset(training_set_mesh, !id %in% trainRowNumbers$Resample1)
+df_test2 <- subset(training_set_mesh, !id %in% trainRowNumbers$Resample2)
+df_test3 <- subset(training_set_mesh, !id %in% trainRowNumbers$Resample3)
+df_test4 <- subset(training_set_mesh, !id %in% trainRowNumbers$Resample4)
+df_test5 <- subset(training_set_mesh, !id %in% trainRowNumbers$Resample5)
+
+trainRowNumbers_val = initial_split(df_training1, prop = 0.8)
+df_training_nn_1 = training(trainRowNumbers_val)
+df_val1 = testing(trainRowNumbers_val)
+
+trainRowNumbers_val = initial_split(df_training2, prop = 0.8)
+df_training_nn_2 = training(trainRowNumbers_val)
+df_val2 = testing(trainRowNumbers_val)
+
+trainRowNumbers_val = initial_split(df_training3, prop = 0.8)
+df_training_nn_3 = training(trainRowNumbers_val)
+df_val3 = testing(trainRowNumbers_val)
+
+trainRowNumbers_val = initial_split(df_training4, prop = 0.8)
+df_training_nn_4 = training(trainRowNumbers_val)
+df_val4 = testing(trainRowNumbers_val)
+
+trainRowNumbers_val = initial_split(df_training5, prop = 0.8)
+df_training_nn_5 = training(trainRowNumbers_val)
+df_val5 = testing(trainRowNumbers_val)
+```
+
+#Train,val and test list 
+```{r}
+train_list <- list(df_training_nn_1, df_training_nn_2, df_training_nn_3, df_training_nn_4, df_training_nn_5)
+val_list   <- list(df_val1, df_val2, df_val3, df_val4, df_val5)
+test_list  <- list(df_test1, df_test2, df_test3, df_test4, df_test5)
+```
+
+#Parameter grid 
+```{r}
+param_grid <- expand.grid(
+  word2vecdim = c(32, 100,300),
+  max_length = c(150, 300, 600),
+  epochs = 100,
+  patience = c(5),
+  text_col = c("description", "mesh_final"),
+  stringsAsFactors = FALSE
+)
+
+```
+#Function: process_and_model_fold_general
+```{r}
+
+process_and_model_fold_general <- function(df_train, df_val, df_test,
+                                           text_col,
+                                           word2vecdim,
+                                           max_length,
+                                           epochs,
+                                           patience) {
+
+  preprocess <- function(df, text_col) {
+    df %>%
+      select(id, nct_id, surgery, surg_onc, oncology, translational, surg_anes, !!sym(text_col)) %>%
+      unnest_tokens(word, !!sym(text_col)) %>%
+      group_by(nct_id, id, surgery, surg_onc, oncology, translational, surg_anes) %>%
+      summarise(text = str_c(word, collapse = " "), .groups = "drop")
+  }
+
+  train_proc <- preprocess(df_train, text_col)
+  val_proc   <- preprocess(df_val, text_col)
+  test_proc  <- preprocess(df_test, text_col)
+
+  x_train <- train_proc$text
+  x_val   <- val_proc$text
+  x_test  <- test_proc$text
+
+  y_train <- ifelse(train_proc$surg_onc == "yes", 1, 0)
+  y_val   <- ifelse(val_proc$surg_onc == "yes", 1, 0)
+  y_test  <- ifelse(test_proc$surg_onc == "yes", 1, 0)
+
+  tokenizer <- text_tokenizer()
+  tokenizer %>% fit_text_tokenizer(x_train)
+
+  input_train <- pad_sequences(texts_to_sequences(tokenizer, x_train), maxlen = max_length)
+  input_val   <- pad_sequences(texts_to_sequences(tokenizer, x_val), maxlen = max_length)
+  input_test  <- pad_sequences(texts_to_sequences(tokenizer, x_test), maxlen = max_length)
+
+  num_tokens <- length(tokenizer$word_index)
+  weight <- length(y_train) / sum(y_train)
+
+  model <- keras_model_sequential() %>%
+    layer_embedding(input_dim = num_tokens + 1,
+                    output_dim = word2vecdim,
+                    input_length = max_length,
+                    mask_zero = FALSE) %>%
+    layer_flatten() %>%
+    layer_dense(units = 32, activation = "relu", kernel_regularizer = regularizer_l2(0.05)) %>%
+    layer_dropout(rate = 0.5) %>%
+    layer_dense(units = 1, activation = "sigmoid")
+
+  model %>% compile(
+    optimizer = "adam",
+    loss = "binary_crossentropy",
+    metrics = list(metric_binary_accuracy())
+  )
+
+  history <- model %>% keras3::fit(
+    input_train, y_train,
+    epochs = epochs,
+    batch_size = 512,
+    class_weight = list("0" = 1, "1" = weight),
+    validation_data = list(input_val, y_val),
+    callbacks = list(callback_early_stopping(monitor = "val_loss", mode = "min", patience = patience, restore_best_weights = TRUE)),
+    verbose = 0
+  )
+
+  pred_prob <- predict(model, input_test)
+  pred_class <- ifelse(pred_prob > 0.5, 1, 0)
+  cm <- confusionMatrix(factor(pred_class), factor(y_test))
+
+  list(
+    model = model,
+    epoch = length(history$metrics$val_loss) - patience,
+    confusion_matrix = cm,
+    predictions = tibble(actual = y_test, predicted = pred_class, prob = pred_prob),
+    params = list(
+      word2vecdim = word2vecdim,
+      max_length = max_length,
+      epochs = epochs,
+      patience = patience,
+      text_col = text_col
+    )
+  )
+}
+
+```
+#Functions: train_single_text_model
+```{r}
+train_single_text_model <- function(text_col, param_grid, train_list, val_list, test_list) {
+  library(progress)
+
+  # Filter only relevant parameter rows
+  param_rows <- which(param_grid$text_col == text_col)
+  total_steps <- length(param_rows) * length(train_list)
+
+  pb <- progress_bar$new(
+    total = total_steps,
+    format = paste0("  Training ", text_col, " [:bar] :percent | Fold :current/:total | Elapsed: :elapsed"),
+    clear = FALSE, width = 70
+  )
+
+  model_results <- list()
+
+  for (i in param_rows) {
+    params <- param_grid[i, ]
+
+    fold_results <- vector("list", length(train_list))
+    for (fold in seq_along(train_list)) {
+      pb$tick()
+
+      model_out <- process_and_model_fold_general(
+        df_train = train_list[[fold]],
+        df_val   = val_list[[fold]],
+        df_test  = test_list[[fold]],
+        text_col = text_col,
+        word2vecdim = params$word2vecdim,
+        max_length = params$max_length,
+        epochs = params$epochs,
+        patience = params$patience
+      )
+      fold_results[[fold]] <- model_out
+    }
+
+    model_results[[length(model_results) + 1]] <- list(
+      run_id = i,
+      text_col = text_col,
+      param_setting = params,
+      fold_results = fold_results
+    )
+  }
+
+  model_results
+}
+
+
+```
+#Function: summarize results 
+```{r}
+summarize_results_single_text_model <- function(all_results) {
+  all_summaries <- list()
+
+  for (run in all_results) {
+    run_id <- run$run_id
+    param_info <- run$param_setting
+    text_col <- run$text_col
+
+    for (i in seq_along(run$fold_results)) {
+      result <- run$fold_results[[i]]
+      cm <- result$confusion_matrix
+      stats <- cm$byClass
+
+      summary_row <- tibble(
+        run_id = run_id,
+        fold = i,
+        model = text_col,
+        accuracy = cm$overall["Accuracy"],
+        kappa = cm$overall["Kappa"],
+        sensitivity = stats["Sensitivity"],
+        specificity = stats["Specificity"],
+        #f1 = stats["F1"], 
+        balanced_accuracy = stats["Balanced Accuracy"],
+        word2vecdim = param_info$word2vecdim,
+        max_length = param_info$max_length,
+        epochs = param_info$epochs,
+        patience = param_info$patience
+      )
+
+      all_summaries[[length(all_summaries) + 1]] <- summary_row
+    }
+  }
+
+  bind_rows(all_summaries)
+}
+
+```
+
+
+#Function: Ensemble results
+```{r}
+generate_ensemble_combinations <- function(desc_models, mesh_models) {
+  ensemble_results <- list()
+  id <- 1
+
+  for (desc in desc_models) {
+    for (mesh in mesh_models) {
+      if (length(desc$fold_results) != length(mesh$fold_results)) stop("Mismatch in folds")
+
+      fold_ensembles <- vector("list", length(desc$fold_results))
+      for (i in seq_along(desc$fold_results)) {
+        desc_preds <- desc$fold_results[[i]]$predictions
+        mesh_preds <- mesh$fold_results[[i]]$predictions
+
+        avg_probs <- (desc_preds$prob + mesh_preds$prob) / 2
+        ensemble_class <- ifelse(avg_probs > 0.5, 1, 0)
+        y_test <- desc_preds$actual
+
+        cm <- confusionMatrix(factor(ensemble_class), factor(y_test))
+        fold_ensembles[[i]] <- list(
+          confusion_matrix = cm,
+          predictions = tibble(actual = y_test, predicted = ensemble_class, prob = avg_probs)
+        )
+      }
+
+      ensemble_results[[length(ensemble_results) + 1]] <- list(
+        ensemble_id = id,
+        desc_run_id = desc$run_id,
+        mesh_run_id = mesh$run_id,
+        desc_params = desc$param_setting,
+        mesh_params = mesh$param_setting,
+        fold_results = fold_ensembles
+      )
+      id <- id + 1
+    }
+  }
+
+  ensemble_results
+}
+
+
+```
+#Function: summarize ensemble results
+```{r}
+summarize_ensemble_results <- function(ensemble_results) {
+  all_summaries <- list()
+
+  for (res in ensemble_results) {
+    ensemble_id <- res$ensemble_id
+    desc_id <- res$desc_run_id
+    mesh_id <- res$mesh_run_id - nrow(param_grid) / length(unique(param_grid$text_col))  #Subtract the number of distinct parameters 
+    desc_params <- res$desc_params
+    mesh_params <- res$mesh_params
+
+    for (fold in seq_along(res$fold_results)) {
+      fold_result <- res$fold_results[[fold]]
+      cm <- fold_result$confusion_matrix
+      stats <- cm$byClass
+
+      summary_row <- tibble(
+        ensemble_id = ensemble_id,
+        desc_run_id = desc_id,
+        mesh_run_id = mesh_id,
+        fold = fold,
+        model = "ensemble",
+        accuracy = cm$overall["Accuracy"],
+        kappa = cm$overall["Kappa"],
+        sensitivity = stats["Sensitivity"],
+        specificity = stats["Specificity"],
+        #f1 = stats["F1"],
+        balanced_accuracy = stats["Balanced Accuracy"],
+        # Add description and mesh model parameters for traceability
+        desc_word2vecdim = desc_params$word2vecdim,
+        desc_max_length = desc_params$max_length,
+        desc_epochs = desc_params$epochs,
+        desc_patience = desc_params$patience,
+        mesh_word2vecdim = mesh_params$word2vecdim,
+        mesh_max_length = mesh_params$max_length,
+        mesh_epochs = mesh_params$epochs,
+        mesh_patience = mesh_params$patience
+      )
+
+      all_summaries[[length(all_summaries) + 1]] <- summary_row
+    }
+  }
+
+  bind_rows(all_summaries)
+}
+
+```
+
+#Functions: Rank test for single test and ensemble
+```{r}
+rank_models_by_metrics_single_test_model <- function(summary_df) {
+  # Aggregate metrics across folds for each run_id and model type
+  avg_metrics <- summary_df %>%
+    group_by(run_id, word2vecdim, max_length, epochs, patience) %>%
+    summarise(
+      accuracy = mean(accuracy, na.rm = TRUE),
+      kappa = mean(kappa, na.rm = TRUE),
+      sensitivity = mean(sensitivity, na.rm = TRUE),
+      specificity = mean(specificity, na.rm = TRUE),
+      #f1 = mean(f1, na.rm = TRUE),
+      balanced_accuracy = mean(balanced_accuracy, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  # Rank each metric (lower rank = better performance)
+  ranked <- avg_metrics %>%
+    mutate(
+      rank_accuracy = rank(-accuracy),
+      rank_kappa = rank(-kappa),
+      rank_sensitivity = rank(-sensitivity),
+      rank_specificity = rank(-specificity),
+      #rank_f1 = rank(-f1),
+      rank_balanced_accuracy = rank(-balanced_accuracy)
+    ) %>%
+    rowwise() %>%
+    mutate(
+      rank_sum = sum(c_across(starts_with("rank_"))),
+      rank_avg = mean(c_across(starts_with("rank_")))
+    ) %>%
+    ungroup() %>%
+    arrange(rank_avg)
+
+  return(ranked)
+}
+
+
+##########
+
+rank_models_by_metrics_ensemble <- function(summary_df) {
+  # Aggregate metrics across folds for each run_id and model type
+  avg_metrics <- summary_df %>%
+    group_by(ensemble_id) %>%
+    summarise(
+      accuracy = mean(accuracy, na.rm = TRUE),
+      kappa = mean(kappa, na.rm = TRUE),
+      sensitivity = mean(sensitivity, na.rm = TRUE),
+      specificity = mean(specificity, na.rm = TRUE),
+      #f1 = mean(f1, na.rm = TRUE),
+      balanced_accuracy = mean(balanced_accuracy, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  # Rank each metric (lower rank = better performance)
+  ranked <- avg_metrics %>%
+    mutate(
+      rank_accuracy = rank(-accuracy),
+      rank_kappa = rank(-kappa),
+      rank_sensitivity = rank(-sensitivity),
+      rank_specificity = rank(-specificity),
+      #rank_f1 = rank(-f1),
+      rank_balanced_accuracy = rank(-balanced_accuracy)
+    ) %>%
+    rowwise() %>%
+    mutate(
+      rank_sum = sum(c_across(starts_with("rank_"))),
+      rank_avg = mean(c_across(starts_with("rank_")))
+    ) %>%
+    ungroup() %>%
+    arrange(rank_avg)
+
+  return(ranked)
+}
+
+#######
+#Total rank list 
+
+
+rank_models_all <- function(summary_df) {
+  # Aggregate metrics across folds for each run_id and model type
+  avg_metrics <- summary_df %>%
+    group_by(run_id, model) %>%
+    summarise(
+      accuracy = mean(accuracy, na.rm = TRUE),
+      kappa = mean(kappa, na.rm = TRUE),
+      sensitivity = mean(sensitivity, na.rm = TRUE),
+      specificity = mean(specificity, na.rm = TRUE),
+      #f1 = mean(f1, na.rm = TRUE),
+      balanced_accuracy = mean(balanced_accuracy, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  # Rank each metric (lower rank = better performance)
+  ranked <- avg_metrics %>%
+    mutate(
+      rank_accuracy = rank(-accuracy),
+      rank_kappa = rank(-kappa),
+      rank_sensitivity = rank(-sensitivity),
+      rank_specificity = rank(-specificity),
+      #rank_f1 = rank(-f1),
+      rank_balanced_accuracy = rank(-balanced_accuracy)
+    ) %>%
+    rowwise() %>%
+    mutate(
+      rank_sum = sum(c_across(starts_with("rank_"))),
+      rank_avg = mean(c_across(starts_with("rank_")))
+    ) %>%
+    ungroup() %>%
+    arrange(rank_avg)
+
+  return(ranked)
+}
+
+
+
+```
+#Train single test models 
+```{r}
+description_models <- train_single_text_model("description", param_grid, train_list, val_list, test_list)
+mesh_models <- train_single_text_model("mesh_final", param_grid, train_list, val_list, test_list)
+
+
+```
+
+#Summary tables and ensemble results
+```{r}
+description_models
+mesh_models
+
+summary_desc = summarize_results_single_text_model(description_models)
+summary_mesh = summarize_results_single_text_model(mesh_models)
+
+ensemble = generate_ensemble_combinations(description_models,mesh_models)
+summary_ensemble = summarize_ensemble_results(ensemble)
+```
+#Ranks
+```{r}
+ranks_mesh = rank_models_by_metrics_single_test_model(summary_mesh)
+ranks_mesh$run_id = ranks_mesh$run_id - nrow(param_grid) / length(unique(param_grid$text_col))
+
+ranks_desc = rank_models_by_metrics_single_test_model(summary_desc)
+
+ranks_ensmble = rank_models_by_metrics_ensemble(summary_ensemble)
+rank_order = ranks_ensmble$ensemble_id
+run_ids = summary_ensemble %>% select(ensemble_id,desc_run_id,mesh_run_id,desc_word2vecdim,desc_max_length,mesh_word2vecdim,mesh_max_length) %>% distinct(ensemble_id, .keep_all = TRUE)
+ranks_ensmble = merge(run_ids, ranks_ensmble, by = "ensemble_id", all.x=FALSE, all.y =TRUE)
+ranks_ensmble = ranks_ensmble %>% arrange(factor(ensemble_id, levels = rank_order))
+
+top_10_ensemble = ranks_ensmble[1:10, ]$ensemble_id
+
+#Top ensemble model parameters
+#desc max_length = 300
+#desc word2vec = 100
+#desc run_id = 5
+#mesh max_length = 300
+#mesh word2vec = 300
+#mesh run_id = 6
+
+####CHECK TOTAL RANK - need to modify the dataframes for the function by making the colnames the same and grouping by model and run_id
+summary_desc_total_rank = summary_desc %>% select(run_id, fold,model, accuracy, kappa, sensitivity, specificity, balanced_accuracy)
+
+summary_mesh_total_rank = summary_mesh %>% select(run_id, fold,model, accuracy, kappa, sensitivity, specificity, balanced_accuracy)
+
+summary_ensemble_total_rank = summary_ensemble
+names(summary_ensemble_total_rank)[names(summary_ensemble_total_rank) == 'ensemble_id'] <- 'run_id'
+summary_ensemble_total_rank = summary_ensemble_total_rank %>% select(run_id, fold,model, accuracy, kappa, sensitivity, specificity, balanced_accuracy)
+
+summary_total_rank = rbind(summary_desc_total_rank,summary_mesh_total_rank)
+summary_total_rank = rbind(summary_total_rank,summary_ensemble_total_rank)
+
+total_rank = rank_models_all(summary_total_rank)
+total_rank$inverse = 1/total_rank$rank_sum
+plot(as.factor(total_rank$model), total_rank$inverse)
+
+
+metrics_long_desc = tidyr::gather(summary_desc, Metric, Value, accuracy:balanced_accuracy, factor_key=TRUE)
+metrics_long_mesh = tidyr::gather(summary_mesh, Metric, Value, accuracy:balanced_accuracy, factor_key=TRUE)
+metrics_long_ensemble = tidyr::gather(summary_ensemble, Metric, Value, accuracy:balanced_accuracy, factor_key=TRUE)
+
+library(Rmisc)
+
+metrics_desc_se = summarySE(metrics_long_desc, measurevar=c("Value") , groupvars=c("run_id","model","Metric", "word2vecdim", "max_length","epochs", "patience"))
+metrics_mesh_se = summarySE(metrics_long_mesh, measurevar=c("Value") , groupvars=c("run_id","model","Metric", "word2vecdim", "max_length","epochs", "patience"))
+metrics_ensemble_se = summarySE(metrics_long_ensemble, measurevar=c("Value") , groupvars=c("ensemble_id","desc_run_id","mesh_run_id","model","Metric"))
+
+
+```
+#CSV ranks
+```{r}
+
+write.csv(ranks_mesh, "ranks_mesh.csv")
+write.csv(ranks_desc, "ranks_desc.csv")
+write.csv(ranks_ensmble, "ranks_ensmble.csv")
+
+
+write.csv(metrics_desc_se, "metrics_desc_se.csv")
+write.csv(metrics_mesh_se, "metrics_mesh_se.csv")
+write.csv(metrics_ensemble_se, "metrics_ensemble_se.csv")
+
+
+```
+#Plots
+```{r}
+library(Rmisc)
+
+metrics_long_desc = tidyr::gather(summary_desc, Metric, Value, accuracy:balanced_accuracy, factor_key=TRUE)
+metrics_long_mesh = tidyr::gather(summary_mesh, Metric, Value, accuracy:balanced_accuracy, factor_key=TRUE)
+
+metrics_long_ensemble = tidyr::gather(summary_ensemble, Metric, Value, accuracy:balanced_accuracy, factor_key=TRUE)
+
+metrics_select_desc = metrics_long_desc %>% filter(run_id == 6)
+metrics_select_desc = metrics_select_desc %>% select(fold, model, Metric, Value)
+
+metrics_long_mesh$run_id = metrics_long_mesh$run_id - nrow(param_grid) / length(unique(param_grid$text_col))
+metrics_select_mesh= metrics_long_mesh %>% filter(run_id == 5)
+metrics_select_mesh = metrics_select_mesh %>% select(fold, model, Metric, Value)
+
+metrics_select_ensemble = metrics_long_ensemble %>% filter(ensemble_id == 42)
+metrics_select_ensemble = metrics_select_ensemble %>% select(fold, model, Metric, Value)
+
+metrics_selected_models = rbind(metrics_select_desc, metrics_select_mesh)
+metrics_selected_models = rbind(metrics_selected_models, metrics_select_ensemble)
+
+
+```
+#Plots
+```{r}
+library(ggpubr)
+
+level_order <- c('description', 'mesh_final', 'ensemble') 
+total_rank$plot_title = "1/Performance Rank"
+rank_plot = ggplot(data = total_rank,aes(x = factor(model, level = level_order), y = inverse, fill = model))+
+  ggbeeswarm::geom_quasirandom(method = "quasirandom", shape = 21,size=2,dodge.width=0.75, width = 0.2, color="black",alpha=0.4,show.legend = F, bandwidth = 1)+
+  geom_boxplot(notch = FALSE,outlier.size = -1, color="black",lwd=0.5, alpha = 0.4,show.legend = F, width=0.5) + 
+  scale_fill_manual(values = c("#E64B35FF", "#91D1C2FF","#4DBBD5FF")) +
+  scale_x_discrete(labels = c("Description", "MeSH", "Ensemble")) +
+  scale_y_continuous(labels = c(0.003, 0.005, 0.007), breaks = c(0.003, 0.005, 0.007)) +
+  ylab("") + 
+  ggtitle("1/Performance Rank") +
+  theme_bw() +
+  theme(axis.text.x = element_blank())  +
+  theme(axis.text.y = element_text(colour="black",size = 16)) + 
+  theme(plot.title = element_blank()) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.title.y = element_text(colour="black",size = 16)) +
+  theme(legend.position = "none") +
+  theme(strip.text.x  =  element_text(size = 15), color = "black", 
+          strip.background = element_rect(alpha('grey', 0.1))) + facet_wrap(~plot_title)
+ggsave("rank_plot.svg",rank_plot, height = 3, width = 3 ) 
+
+#ACCURACY
+accuracy_plot = metrics_selected_models %>% filter(Metric=="accuracy") %>%
+  ggplot(data = .,aes(x = factor(model, level = level_order), y = Value, fill = model))+
+  geom_boxplot(notch = FALSE, color="black",lwd=0.5, alpha = 0.8,show.legend = F, width=0.5) + 
+  scale_fill_manual(values = c("#E64B35FF", "#91D1C2FF","#4DBBD5FF")) +
+  scale_x_discrete(labels = c("Description", "MeSH", "Ensemble")) +
+  ylab("") + 
+  ggtitle("Performance Rank") +
+  theme_bw() +
+  theme(axis.text.x = element_blank())  +
+  theme(axis.text.y = element_text(colour="black",size = 16)) + 
+  theme(plot.title = element_blank()) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.title.y = element_blank()) +
+  theme(legend.position = "none") +
+  theme(strip.text.x  =  element_text(size = 15), color = "black", 
+          strip.background = element_rect(alpha('grey', 0.1))) + facet_wrap(~Metric, labeller = as_labeller(c("accuracy" = "Accuracy")))
+ggsave("accuracy_plot.svg",accuracy_plot, height = 3, width = 3 )
+
+
+#KAPPA
+kappa_plot = metrics_selected_models %>% filter(Metric=="kappa") %>%
+  ggplot(data = .,aes(x = factor(model, level = level_order), y = Value, fill = model))+
+  geom_boxplot(notch = FALSE, color="black",lwd=0.5, alpha = 0.8,show.legend = F, width=0.5) + 
+  scale_fill_manual(values = c("#E64B35FF", "#91D1C2FF","#4DBBD5FF")) +
+  scale_x_discrete(labels = c("Description", "MeSH", "Ensemble")) +
+  scale_y_continuous(limits = c(0.4, 0.7)) +
+  ylab("") + 
+  ggtitle("Performance Rank") +
+  theme_bw() +
+  theme(axis.text.x = element_blank())  +
+  theme(axis.text.y = element_text(colour="black",size = 16)) + 
+  theme(plot.title = element_blank()) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.title.y = element_blank()) +
+  theme(legend.position = "none") +
+  theme(strip.text.x  =  element_text(size = 15), color = "black", 
+          strip.background = element_rect(alpha('grey', 0.1))) + facet_wrap(~Metric, labeller = as_labeller(c("kappa" = "Kappa")))
+ggsave("kappa_plot.svg",kappa_plot, height = 3, width = 3 )
+
+
+#Sensitivity 
+sensitivity_plot = metrics_selected_models %>% filter(Metric=="sensitivity") %>%
+  ggplot(data = .,aes(x = factor(model, level = level_order), y = Value, fill = model))+
+  geom_boxplot(notch = FALSE, color="black",lwd=0.5, alpha = 0.8,show.legend = F, width=0.5) + 
+  scale_fill_manual(values = c("#E64B35FF", "#91D1C2FF","#4DBBD5FF")) +
+  scale_x_discrete(labels = c("Description", "MeSH", "Ensemble")) +
+  #scale_y_continuous(limits = c(0.4, 0.7)) +
+  ylab("") + 
+  ggtitle("Performance Rank") +
+  theme_bw() +
+  theme(axis.text.x = element_text(colour="black", size = 16,angle = 45,  hjust = 1))  +
+  theme(axis.text.y = element_text(colour="black",size = 16)) + 
+  theme(plot.title = element_blank()) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.title.y = element_text(colour="black",size = 16)) +
+  theme(legend.position = "none") +
+  theme(strip.text.x  =  element_text(size = 15), color = "black", 
+          strip.background = element_rect(alpha('grey', 0.1))) + facet_wrap(~Metric, labeller = as_labeller(c("sensitivity" = "Sensitivity")))
+ggsave("sensitivity_plot.svg",sensitivity_plot, height = 3, width = 3 )
+
+
+#Specificity 
+specificity_plot = metrics_selected_models %>% filter(Metric=="specificity") %>%
+  ggplot(data = .,aes(x = factor(model, level = level_order), y = Value, fill = model))+
+  geom_boxplot(notch = FALSE, color="black",lwd=0.5, alpha = 0.8,show.legend = F, width=0.5) + 
+  scale_fill_manual(values = c("#E64B35FF", "#91D1C2FF","#4DBBD5FF")) +
+  scale_x_discrete(labels = c("Description", "MeSH", "Ensemble")) +
+  #scale_y_continuous(limits = c(0.4, 0.9)) +
+  ylab("") + 
+  ggtitle("Performance Rank") +
+  theme_bw() +
+  theme(axis.text.x = element_text(colour="black", size = 16,angle = 45,  hjust = 1))  +
+  theme(axis.text.y = element_text(colour="black",size = 16)) + 
+  theme(plot.title = element_blank()) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.title.y = element_blank()) +
+  theme(legend.position = "none") +
+  theme(strip.text.x  =  element_text(size = 15), color = "black", 
+          strip.background = element_rect(alpha('grey', 0.1))) + facet_wrap(~Metric, labeller = as_labeller(c("specificity" = "Specificity")))
+ggsave("specificity_plot.svg",specificity_plot, height = 3, width = 3 )
+
+#Balanced Accuracy 
+balanced_accuracy_plot = metrics_selected_models %>% filter(Metric=="balanced_accuracy") %>%
+  ggplot(data = .,aes(x = factor(model, level = level_order), y = Value, fill = model))+
+  geom_boxplot(notch = FALSE, color="black",lwd=0.5, alpha = 0.8,show.legend = F, width=0.5) + 
+  scale_fill_manual(values = c("#E64B35FF", "#91D1C2FF","#4DBBD5FF")) +
+  scale_x_discrete(labels = c("Description", "MeSH", "Ensemble")) +
+  #scale_y_continuous(limits = c(0.4, 0.9)) +
+  ylab("") + 
+  ggtitle("Performance Rank") +
+  theme_bw() +
+  theme(axis.text.x = element_text(colour="black", size = 16,angle = 45,  hjust = 1))  +
+  theme(axis.text.y = element_text(colour="black",size = 16)) + 
+  theme(plot.title = element_blank()) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.title.y = element_blank()) +
+  theme(legend.position = "none") +
+  theme(strip.text.x  =  element_text(size = 15), color = "black", 
+          strip.background = element_rect(alpha('grey', 0.1))) + facet_wrap(~Metric, labeller = as_labeller(c("balanced_accuracy" = "Balanced Accuracy")))
+ggsave("balanced_accuracy_plot.svg",balanced_accuracy_plot, height = 3, width = 3 )
+
+
+metrics_plots_patch = wrap_plots(rank_plot  + accuracy_plot + kappa_plot +sensitivity_plot + specificity_plot + balanced_accuracy_plot) +plot_layout(axes = "collect_y") & ylab("Values")
+  
+ggsave("metrics_plots_patch.svg",metrics_plots_patch, height = 5, width = 8.5)
+
+```
+
+#FINAL MODELS 
+
+#%%%FINAL MODEL DESCRIPTION###
+
+
+#Mean epoch 
+```{r}
+mean_epoch_desc = round((description_models[[5]]$fold_results[[1]]$epoch + 
+                         description_models[[5]]$fold_results[[2]]$epoch + 
+                         description_models[[5]]$fold_results[[3]]$epoch +
+                         description_models[[5]]$fold_results[[4]]$epoch +
+                         description_models[[5]]$fold_results[[5]]$epoch)/5)
+```
+
+#Word2vec32 Fold1
+```{r}
+#######################################################
+######### separate training into separate words #######
+#######################################################
+nct_tokens_desc <- training_set_mesh %>% 
+    select(id, nct_id,surgery,surg_onc,oncology,translational,surg_anes, description) %>%
+    unnest_tokens(word, description)
+
+nct_tokens_desc_final = nct_tokens_desc %>% 
+          group_by(word) 
+
+
+nct_train_desc <- nct_tokens_desc %>% 
+          group_by(word) %>% 
+          group_by(nct_id, id, surgery,surg_onc,oncology,translational,surg_anes) %>% 
+          summarise(description = stringr::str_c(word, collapse = " "))
+
+x_train <- nct_train_desc$description
+y_train <- nct_train_desc$surg_onc
+
+y_train = ifelse(y_train=="yes",1,0)
+
+```
+#Start tokenizing 
+```{r}
+# maximum number of words for a nct description/mesh
+max_length <- 300
+
+# Vectorize the tokens, each token will receive a unique integer, the index of that token in a dictionary. 
+# Remember, we already restricted the corpus to 37.520 unique words.
+tokenizer_train_desc <- text_tokenizer() %>% fit_text_tokenizer(x_train)
+
+
+# and put these integers into a sequence
+sequences_train_desc <- texts_to_sequences(tokenizer_train_desc, x_train)
+
+# and make sure that every sequence has the same length (Keras requirement)
+input_train_desc <- pad_sequences(sequences_train_desc, maxlen = max_length)
+
+```
+###NNET
+```{r}
+word2vecdim <- 100
+
+# how many words are in the index
+num_tokens <- length(unique(tokenizer_train_desc$word_index))
+weight = length(y_train) / sum(y_train) 
+
+model_final_desc <- keras_model_sequential() %>% 
+  # Specify the maximum input length (150) and input_dim (unique tokens+1) and choose 32 dimensions
+  layer_embedding(input_dim = num_tokens+1, 
+                  output_dim = word2vecdim, 
+                  input_length = max_length,
+                  mask_zero = FALSE,                 
+                 ) %>% 
+  # Shape `(samples, max_length * word2vecdim)`
+  layer_flatten() %>% 
+  layer_dense(units = 32, activation = "relu",kernel_regularizer = regularizer_l2(0.05)) %>%
+  layer_dropout(0.5) %>%
+  layer_dense(units = 1, activation = "sigmoid") 
+
+model_final_desc %>% compile(
+  optimizer = "adam",
+  # we have a binary classification 
+  loss = "binary_crossentropy",
+  # retrieve accuracy as measure
+  metrics = list(metric_binary_accuracy())
+)
+
+history_desc <- model_final_desc %>% keras3::fit(
+  input_train_desc, y_train,
+  # maximum number of iterations
+  epochs = mean_epoch_desc,
+  # how many nct do we offer in each batch
+  batch_size = 512,
+  # check train results againts test data
+  class_weight = list("0"=1,"1"=weight), 
+  #validation_data = list(input_val, y_val),
+  #callbacks = list(callback_early_stopping(monitor = "val_loss",mode='min', patience = 5, restore_best_weights = TRUE))
+  )
+
+pred = keras_predict(model_final_desc, input_train_desc, y_train)
+
+pred_prob_desc_final_all = predict(model_final_desc, input_train_desc)
+
+actual = pred$state
+predicted = pred$.pred_class
+
+CM_desc_finalmodel = confusionMatrix(table(predicted,actual))
+```
+
+#%%%FINAL MODEL MESH##
+
+#Mean epoch 
+```{r}
+mean_epoch_mesh = round((mesh_models[[6]]$fold_results[[1]]$epoch + 
+                         mesh_models[[6]]$fold_results[[2]]$epoch + 
+                         mesh_models[[6]]$fold_results[[3]]$epoch +
+                         mesh_models[[6]]$fold_results[[4]]$epoch +
+                         mesh_models[[6]]$fold_results[[5]]$epoch)/5)
+```
+#Word2vec32 Fold1
+```{r}
+#######################################################
+######### separate training into separate words #######
+#######################################################
+nct_tokens <- training_set_mesh %>% 
+    select(id, nct_id,surgery,surg_onc,oncology,translational,surg_anes, description, mesh_final) %>%
+    unnest_tokens(word, mesh_final)
+
+nct_train <- nct_tokens %>% 
+          group_by(word) %>% 
+          group_by(nct_id, id, surgery,surg_onc,oncology,translational,surg_anes,description) %>% 
+          summarise(mesh_final = stringr::str_c(word, collapse = " "))
+
+# split nct and labels into train and test
+# split nct and labels into train and test
+x_train_mesh <- nct_train$mesh_final
+
+y_train <- nct_train$surg_onc
+
+y_train = ifelse(y_train=="yes",1,0)
+
+
+```
+#Start tokenizing 
+```{r}
+# maximum number of words for a nct description/mesh
+max_length <- 300
+
+# Vectorize the tokens, each token will receive a unique integer, the index of that token in a dictionary. 
+# Remember, we already restricted the corpus to 37.520 unique words.
+tokenizer_train_mesh <- text_tokenizer() %>% fit_text_tokenizer(x_train_mesh)
+
+# and put these integers into a sequence
+sequences_train_mesh <- texts_to_sequences(tokenizer_train_mesh, x_train_mesh)
+
+# and make sure that every sequence has the same length (Keras requirement)
+input_train_mesh <- pad_sequences(sequences_train_mesh, maxlen = max_length)
+
+```
+###NNET
+```{r}
+word2vecdim <- 300
+
+# how many words are in the index
+num_tokens_mesh <- length(unique(tokenizer_train_mesh$word_index))
+weight = length(y_train) / sum(y_train) 
+
+model_final_mesh <- keras_model_sequential() %>% 
+  # Specify the maximum input length (150) and input_dim (unique tokens+1) and choose 32 dimensions
+  layer_embedding(input_dim = num_tokens_mesh+1, 
+                  output_dim = word2vecdim, 
+                  input_length = max_length,
+                  mask_zero = FALSE,                 
+                 ) %>% 
+  # Shape `(samples, max_length * word2vecdim)`
+  layer_flatten() %>% 
+  layer_dense(units = 32, activation = "relu",kernel_regularizer = regularizer_l2(0.05)) %>%
+  layer_dropout(0.5) %>%
+  layer_dense(units = 1, activation = "sigmoid") 
+
+model_final_mesh %>% compile(
+  optimizer = "adam",
+  # we have a binary classification 
+  loss = "binary_crossentropy",
+  # retrieve accuracy as measure
+  metrics = list(metric_binary_accuracy())
+)
+
+history_mesh <- model_final_mesh %>% keras3::fit(
+  input_train_mesh, y_train,
+  # maximum number of iterations
+  epochs = mean_epoch_mesh,
+  # how many nct do we offer in each batch
+  batch_size = 512,
+  # check train results againts test data
+  class_weight = list("0"=1,"1"=weight), 
+  #validation_data = list(input_val_mesh, y_val),
+  #callbacks = list(callback_early_stopping(monitor = "val_loss",mode='min', patience = 5, restore_best_weights = TRUE))
+  )
+
+pred = keras_predict(model_final_mesh, input_train_mesh, y_train)
+
+pred_prob_mesh_final_all = predict(model_final_mesh, input_train_mesh)
+
+actual = pred$state
+predicted = pred$.pred_class
+
+CM_mesh_finalmodel = confusionMatrix(table(predicted,actual))
+
+```
+
+#Ensemble 
+```{r}
+ensemble_Word2vec32 = cbind(pred_prob_desc_final_all, pred_prob_mesh_final_all)
+ensemble_Word2vec32 = as.data.frame(ensemble_Word2vec32)
+ensemble_Word2vec32$mean = (ensemble_Word2vec32$V1 + ensemble_Word2vec32$V2)/2
+ensemble_Word2vec32$class = ensemble_Word2vec32$mean>0.5
+ensemble_Word2vec32$class = ifelse(ensemble_Word2vec32$class==TRUE, "yes", "no")
+
+actual = training_set_mesh$surg_onc
+actual = ifelse(actual=="yes",1,0)
+actual = as.factor(actual)
+actual = relevel(actual,"1")
+
+predicted = ensemble_Word2vec32$class
+predicted = ifelse(predicted=="yes",1,0)
+predicted = as.factor(predicted)
+predicted = relevel(predicted,"1")
+
+ensemble_FINAL = confusionMatrix(table(predicted,actual))
+
+```
+#Apply model to all data 
+```{r}
+#Import Final Data - Data file too large for github upload but available upon request. 
+#final_data_surgonc <- read.csv("~/pathtodatafile/final_data_surgonc.csv", row.names=1)
+#final_data = final_data_surgonc
+
+```
+#Tokens DESC
+```{r}
+#######################################################
+######### separate training into separate words #######
+#######################################################
+applicable_tokens_desc <- nct_tokens_desc_final$word #Applicable tokens from the final training of desc terms 
+
+nct_tokens_desc_filter <- final_data %>% 
+    select(nct_id,description) %>%
+    unnest_tokens(word, description)
+
+nct_tokens_desc_filter<- nct_tokens_desc_filter %>% filter(word %in% applicable_tokens_desc)
+
+nct_train_desc_filter <- nct_tokens_desc_filter %>% 
+         group_by(word) %>% 
+          #filter(word %in% applicable_tokens_desc) %>%
+          #mutate(token_freq=n()) %>%  
+          #filter(token_freq>=5) %>% 
+          group_by(nct_id) %>% 
+          summarise(description = stringr::str_c(word, collapse = " "))
+
+#nct_included = nct_train_desc_filter$nct_id
+
+x_final_desc_filter <- nct_train_desc_filter$description
+
+
+```
+#Start tokenizing DESC
+```{r}
+# maximum number of words for a nct description/mesh
+max_length <- 300
+
+# Vectorize the tokens, each token will receive a unique integer, the index of that token in a dictionary. 
+# Remember, we already restricted the corpus to 37.520 unique words.
+#tokenizer_final_desc_filter <- text_tokenizer() %>% fit_text_tokenizer(x_final_desc_filter)
+
+# and put these integers into a sequence
+sequences_final_desc_filter <- texts_to_sequences(tokenizer_train_desc, x_final_desc_filter)
+
+# and make sure that every sequence has the same length (Keras requirement)
+input_final_desc_filter <- pad_sequences(sequences_final_desc_filter, maxlen = max_length)
+
+```
+
+
+#Tokens MESH
+```{r}
+#######################################################
+######### separate training into separate words #######
+#######################################################
+applicable_tokens <- nct_tokens$word #Applicable tokens from the final training of mesh terms 
+
+nct_tokens_mesh_filter <- final_data %>% 
+    select(nct_id, mesh_final) %>%
+    unnest_tokens(word, mesh_final)
+
+nct_tokens_mesh_filter<- nct_tokens_mesh_filter %>% filter(word %in% applicable_tokens)
+
+nct_train_mesh_filter <- nct_tokens_mesh_filter %>% 
+          group_by(word) %>% 
+          #filter(word %in% applicable_tokens) %>%
+          #mutate(token_freq=n()) %>%  
+          #filter(token_freq>=1) %>% 
+          group_by(nct_id) %>% 
+          summarise(mesh_final = stringr::str_c(word, collapse = " "))
+
+#nct_train_mesh_filter = nct_train_mesh_filter %>% filter(nct_id %in% nct_included)
+
+x_final_mesh_filter <- nct_train_mesh_filter$mesh_final
+
+
+```
+
+#Start tokenizing MESH
+```{r}
+# maximum number of words for a nct description/mesh
+max_length <- 300
+
+# Vectorize the tokens, each token will receive a unique integer, the index of that token in a dictionary. 
+# Remember, we already restricted the corpus to 37.520 unique words.
+#tokenizer_final_mesh_filter <- text_tokenizer() %>% fit_text_tokenizer(x_final_mesh_filter)
+
+# and put these integers into a sequence
+sequences_final_mesh_filter <- texts_to_sequences(tokenizer_train_mesh, x_final_mesh_filter)
+
+# and make sure that every sequence has the same length (Keras requirement)
+input_final_mesh_filter <- pad_sequences(sequences_final_mesh_filter, maxlen = max_length)
+
+```
+
+
+
+#FINAL ALLOCATION
+```{r}
+pred_prob_mesh_final_allocation = predict(model_final_mesh, input_final_mesh_filter)
+
+mesh_final = as.data.frame(pred_prob_mesh_final_allocation)
+mesh_final$class = mesh_final$V1>0.5
+table(mesh_final$class )
+mesh_final$nct_id = nct_train_mesh_filter$nct_id
+ 
+pred_prob_desc_final_allocation = predict(model_final_desc, input_final_desc_filter)
+
+desc_final = as.data.frame(pred_prob_desc_final_allocation)
+desc_final$class = desc_final$V1>0.5
+table(desc_final$class )
+desc_final$nct_id = nct_train_desc_filter$nct_id
+
+ensemble_FINAL = merge(mesh_final, desc_final, by= "nct_id")
+ensemble_FINAL = as.data.frame(ensemble_FINAL)
+ensemble_FINAL$mean = (ensemble_FINAL$V1.x + ensemble_FINAL$V1.y)/2
+ensemble_FINAL$class = ensemble_FINAL$mean>0.5
+ensemble_FINAL$class = ifelse(ensemble_FINAL$class==TRUE, "yes", "no")
+
+
+```
+
+#MESH FINAL CHECK 
+
+```{r}
+
+mesh_final_check = mesh_final
+
+mesh_final_check = merge(mesh_final_check,training_set_mesh, by="nct_id")
+
+actual = as.factor(mesh_final_check$surg_onc)
+predicted = mesh_final_check$class
+predicted = ifelse(predicted==TRUE, "yes", "no")
+predicted = as.factor(predicted)
+confusionMatrix(table(predicted,actual))
+
+
+final_check_withtext = merge(ensemble_FINAL,final_data, by="nct_id")
+
+final_check_withtext_train = merge(final_check_withtext,training_set_mesh, by="nct_id")
+
+final_check = merge(ensemble_FINAL,training_set_mesh, by="nct_id")
+
+actual = as.factor(final_check$surg_onc)
+predicted = final_check$class
+confusionMatrix(table(predicted,actual))
+```
+
+#Write final dataset with assigned surgonc
+```{r}
+write.csv(final_check_withtext, "ensemble_FINAL_surgonc_May8.csv")
+```
+
+
