@@ -1,0 +1,412 @@
+---
+title: "Word embedding"
+output: html_document
+date: "2025-05-04"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The models "model_final_desc" and "model_final_mesh" is derived after running Surgical Oncology Models and Final Git script. For reproducibility we provide the embedding_matrix_desc and embedding_matrix_mesh. 
+
+
+#DESC
+```{r}
+
+library(dplyr)
+
+embedding_matrix_desc <- get_weights(model_final_desc)[[1]]
+
+words <- data_frame(
+  word = names(tokenizer_train_desc$word_index), 
+  id = as.integer(unlist(tokenizer_train_desc$word_index))
+)
+
+#words <- words %>%
+  #dplyr::filter(id <= tokenizer_train_desc$num_words) %>%
+  #dplyr::arrange(id)
+
+row.names(embedding_matrix_desc) <- c("UNK", words$word)
+
+```
+
+```{r}
+library(text2vec)
+
+find_similar_words <- function(word, embedding_matrix_desc, n = 10) {
+  similarities <- embedding_matrix_desc[word, , drop = FALSE] %>%
+    sim2(embedding_matrix_desc, y = ., method = "cosine")
+  
+  similarities[,1] %>% sort(decreasing = TRUE) %>% head(n)
+}
+
+find_similar_words("lymphadenectomy", embedding_matrix_desc)
+
+
+```
+#embedding_matrix_desc
+```{r}
+library(umap)
+library(plotly)
+library(factoextra)
+library(dbscan)
+
+###PCA
+pca <- prcomp(embedding_matrix_desc[2:3001,], scale. = FALSE)
+pca_desc = pca 
+fviz_eig(pca_desc)
+
+pca_scree_desc = fviz_eig(pca_desc, ncp=5) +
+  ylab("% explained variance") +
+  ggtitle("Scree plot: Description ") +
+  theme_classic() + 
+  theme(legend.position = "none") +
+  theme(axis.text.x = element_text(colour="black", size = 18))  +
+  theme(axis.text.y = element_text(colour="black",size = 18)) + 
+  theme(plot.title = element_text(colour="black", size=18,hjust = 0, vjust=0)) +
+  theme(axis.title.x = element_text(colour="black", size=18)) +
+  theme(axis.title.y = element_text(colour="black", size=18)) 
+ggsave("pca_scree_desc.svg",pca_scree_desc,height=3, width=5)
+
+eig.val<-get_eigenvalue(pca)
+eig.val
+
+var<-get_pca_var(pca)
+a<-fviz_contrib(pca, "var", axes=1, xtickslab.rt=90) # default angle=45°
+b<-fviz_contrib(pca, "var", axes=2, xtickslab.rt=90) # default angle=45°
+plot(a,main = "Variables percentage contribution of first Principal Components")
+plot(b,main = "Variables percentage contribution of second Principal Components")
+
+
+rd1 <- pca$x[,1:2]
+plot(rd1, col = rgb(0,0,0,.5), pch=16, asp = 1)
+rd1 = tibble::rownames_to_column(as.data.frame(rd1), "word")
+
+pca_plot = ggplot(rd1, aes(x = PC1, y = PC2)) + geom_point() + gghighlight::gghighlight(word == "surgery") 
+pca_plot + geom_text() + gghighlight::gghighlight(word == "surgery") 
+
+pca_plot =  ggplot(rd1, aes(x = PC1, y = PC2, label = word)) + 
+  geom_text(size = 3)
+pca_plot
+pca_plot + coord_cartesian(xlim = c(1.1, 2.5), ylim = c(-0.4, 0.1))
+                           
+pca_plot + gghighlight::gghighlight(word == "surgery") 
+pca_plot + gghighlight::gghighlight(word == "neoadjuvant") 
+pca_plot + gghighlight::gghighlight(word == "rectal") 
+pca_plot + gghighlight::gghighlight(word == "lymphadenectomy") 
+
+pca_plot + gghighlight::gghighlight(word == "surgery"|word == "breast") 
+
+ggplotly(pca_plot, tooltip = "text") 
+
+
+
+```
+#PCA plot top 15/bottom15
+```{r}
+top_bottom_df <- rd1 %>%
+  arrange(desc(PC1)) %>%
+  slice_head(n = 15) %>%
+  bind_rows(
+    rd1 %>% arrange(PC1) %>% slice_head(n = 15)
+  ) %>%
+  arrange(PC1)  # sort for waterfall-style plot
+
+# Add factor for row_id to control bar order
+top_bottom_df <- top_bottom_df %>%
+  mutate(word = factor(word, levels = word))
+
+
+PC1_desc_top = top_bottom_df %>% filter(PC1 > 0) %>%
+ggplot(., aes(x = word, y = PC1, fill = PC1 > 0)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  geom_segment(aes(x = word, xend = word,
+                   y = 0, 
+                   yend = ifelse(PC1 > 0, -0.1 * max(abs(PC1)), 0.1 * max(abs(PC1)))),
+               color = "gray60", linetype = "dashed", linewidth = 0.4) +
+  geom_text(aes(label = word,
+                y = ifelse(PC1 > 0, -0.1 * max(abs(PC1)), 0.1 * max(abs(PC1)))),
+            angle = 90,
+            hjust = 1,
+            size = 6) +
+  scale_y_continuous(limits = c(-4,3)) + 
+  labs(title = "",
+       x = "Top 15 Pos.", y = "PC1 Value") +
+  scale_fill_manual(values = c("#B2182B")) + 
+  theme_classic() +
+  theme(axis.line.y = element_blank(),
+    panel.grid.major.y = element_line(color = "grey80", size = 0.4),
+    panel.grid.minor.y = element_line(color = "grey90", size = 0.4)) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.ticks.x = element_blank(),
+    axis.text.y = element_blank(),
+    plot.title = element_text(colour = "black", size = 16, hjust = 0),
+    axis.title.x = element_text(colour = "black", size = 16, vjust = 0.05),
+    axis.title.y = element_blank())
+
+PC1_desc_bottom = top_bottom_df %>% filter(PC1 < 0) %>%
+ggplot(., aes(x = word, y = PC1, fill = PC1 > 0)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  geom_segment(aes(x = word, xend = word,
+                   y = 0, 
+                   yend = ifelse(PC1 > 0, -0.1 * max(abs(PC1)), 0.1 * max(abs(PC1)))),
+               color = "gray60", linetype = "dashed", linewidth = 0.4) +
+  geom_text(aes(label = word,
+                y = ifelse(PC1 > 0, -0.1 * max(abs(PC1)), 0.1 * max(abs(PC1)))),
+            angle = 90,
+            hjust = 0,
+            size = 6) +
+  scale_y_continuous(limits = c(-4,3)) + 
+  labs(title = "PCA Embeddings: Description",
+       x = "Top 15 Neg.", y = "PC1") +
+  scale_fill_manual(values = c("#2166AC")) + 
+  theme_classic() +
+  theme(
+    panel.grid.major.y = element_line(color = "grey80", size = 0.4),
+    panel.grid.minor.y = element_line(color = "grey90", size = 0.4)) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+    axis.text.y = element_text(colour = "black", size = 16),
+    plot.title = element_text(colour = "black", size = 16, hjust = 0),
+    axis.title.x = element_text(colour = "black", size = 16, vjust = 0.05),
+    axis.title.y = element_text(colour = "black", size = 16))
+
+PC_desc_plot = PC1_desc_bottom + PC1_desc_top
+ggsave("PC_desc_plot.svg", PC_desc_plot, height = 4, width = 9)
+```
+#PCA scatter
+```{r}
+# Get top and bottom 10 by PC1
+top15_ids <- rd1 %>% arrange(desc(PC1)) %>% slice_head(n = 15) %>% pull(word)
+bottom15_ids <- rd1 %>% arrange(PC1) %>% slice_head(n = 15) %>% pull(word)
+other_words <- c("and", "of", "for", "the","or")
+
+# Add highlight group and selective labels
+pca_df <- rd1 %>%
+  mutate(highlight_group = case_when(
+    word %in% top15_ids ~ "Top 15 PC1",
+    word %in% bottom15_ids ~ "Bottom 15 PC1",
+    word %in% other_words ~ "Selected PC2",
+    TRUE ~ "Other"
+  ),
+  label = ifelse(word %in% c("and", "of", "for", "the","or","surgery", "neoadjuvant", "breast", "rectal", "resection", "lung", "glioma"), word, NA))
+
+PCA_desc_scatter = ggplot(pca_df, aes(x = PC1, y = PC2)) +
+  geom_point(aes(color = highlight_group), size = 2.5, alpha = 0.8) +
+  scale_color_manual(values = c(
+    "Top 15 PC1" = "#d62728", 
+    "Bottom 15 PC1" = "#1f77b4",
+    "Selected PC2" = "#495",
+    "Other" = "gray80"
+  )) +
+  geom_label_repel(aes(label = label, color = highlight_group), size = 5, na.rm = TRUE,alpha = 0.75,box.padding = 0.1, point.padding = 0.1) +
+  labs(title = "PCA: Description",
+       x = "PC1", y = "PC2", color = "Group") +
+  theme_classic() + 
+  theme(legend.position = "none") +
+  theme(axis.text.x = element_text(colour="black", size = 16))  +
+  theme(axis.text.y = element_text(colour="black",size = 16)) + 
+  theme(plot.title = element_text(colour="black", size=16,hjust = 0, vjust=0)) +
+  theme(axis.title.x = element_text(colour="black", size=16)) +
+  theme(axis.title.y = element_text(colour="black", size=16)) 
+
+ggsave("PCA_desc_scatter.svg", PCA_desc_scatter, height = 4, width = 4)
+
+
+```
+
+#MESH
+```{r}
+
+library(dplyr)
+
+embedding_matrix_mesh <- get_weights(model_final_mesh)[[1]]
+
+words <- data_frame(
+  word = names(tokenizer_train_mesh$word_index), 
+  id = as.integer(unlist(tokenizer_train_mesh$word_index))
+)
+
+#words <- words %>%
+  #dplyr::filter(id <= tokenizer_train_desc$num_words) %>%
+  #dplyr::arrange(id)
+
+row.names(embedding_matrix_mesh) <- c("UNK", words$word)
+
+```
+
+```{r}
+library(text2vec)
+
+find_similar_words <- function(word, embedding_matrix_mesh, n = 10) {
+  similarities <- embedding_matrix_mesh[word, , drop = FALSE] %>%
+    sim2(embedding_matrix_mesh, y = ., method = "cosine")
+  
+  similarities[,1] %>% sort(decreasing = TRUE) %>% head(n)
+}
+
+find_similar_words("surgery", embedding_matrix_mesh)
+
+
+```
+#embedding_matrix_mesh
+```{r}
+library(umap)
+library(plotly)
+
+###PCA
+pca <- prcomp(embedding_matrix_mesh[2:3001,], scale. = TRUE)
+pca_mesh = pca
+
+pca_scree_mesh = fviz_eig(pca_mesh, ncp=5) +
+  ylab("% explained variance") +
+  ggtitle("Scree plot: MeSH ") +
+  theme_classic() + 
+  theme(legend.position = "none") +
+  theme(axis.text.x = element_text(colour="black", size = 18))  +
+  theme(axis.text.y = element_text(colour="black",size = 18)) + 
+  theme(plot.title = element_text(colour="black", size=18,hjust = 0, vjust=0)) +
+  theme(axis.title.x = element_text(colour="black", size=18)) +
+  theme(axis.title.y = element_text(colour="black", size=18)) 
+ggsave("pca_scree_mesh.svg",pca_scree_mesh,height=3, width=5)
+
+eig.val<-get_eigenvalue(pca)
+eig.val
+
+var<-get_pca_var(pca)
+a<-fviz_contrib(pca, "var", axes=1, xtickslab.rt=90) # default angle=45°
+b<-fviz_contrib(pca, "var", axes=2, xtickslab.rt=90) # default angle=45°
+plot(a,main = "Variables percentage contribution of first Principal Components")
+plot(b,main = "Variables percentage contribution of second Principal Components")
+
+
+rd1 <- pca$x[,1:2]
+plot(rd1, col = rgb(0,0,0,.5), pch=16, asp = 1)
+rd1 = tibble::rownames_to_column(as.data.frame(rd1), "word")
+
+ggplot(rd1, aes(x = PC1, y = PC2)) + geom_point()
+
+pca_plot =  ggplot(rd1, aes(x = PC1, y = PC2, label = word)) + 
+  geom_text(size = 3)
+pca_plot
+pca_plot + gghighlight::gghighlight(word == "neoplasms") 
+
+ggplotly(pca_plot, tooltip = "text") 
+```
+#PCA plot top 15/bottom15
+```{r}
+top_bottom_df <- rd1 %>%
+  arrange(desc(PC1)) %>%
+  slice_head(n = 15) %>%
+  bind_rows(
+    rd1 %>% arrange(PC1) %>% slice_head(n = 15)
+  ) %>%
+  arrange(PC1)  # sort for waterfall-style plot
+
+# Add factor for row_id to control bar order
+top_bottom_df <- top_bottom_df %>%
+  mutate(word = factor(word, levels = word))
+
+
+PC1_mesh_top = top_bottom_df %>% filter(PC1 > 0) %>%
+ggplot(., aes(x = word, y = PC1, fill = PC1 > 0)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  geom_segment(aes(x = word, xend = word,
+                   y = 0, 
+                   yend = ifelse(PC1 > 0, -0.05 * max(abs(PC1)), 0.1 * max(abs(PC1)))),
+               color = "gray60", linetype = "dashed", linewidth = 0.4) +
+  geom_text(aes(label = word,
+                y = ifelse(PC1 > 0, -0.05 * max(abs(PC1)), 0.1 * max(abs(PC1)))),
+            angle = 90,
+            hjust = 1,
+            size = 6) +
+  scale_y_continuous(limits = c(-55,75)) + 
+  labs(title = "",
+       x = "Top 15 Pos.", y = "PC1 Value") +
+  scale_fill_manual(values = c("#B2182B")) + 
+  theme_classic() +
+  theme(axis.line.y = element_blank(),
+    panel.grid.major.y = element_line(color = "grey80", size = 0.4),
+    panel.grid.minor.y = element_line(color = "grey90", size = 0.4)) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.ticks.x = element_blank(),
+    axis.text.y = element_blank(),
+    plot.title = element_text(colour = "black", size = 16, hjust = 0),
+    axis.title.x = element_text(colour = "black", size = 16, vjust = 0.05),
+    axis.title.y = element_blank())
+
+PC1_mesh_bottom = top_bottom_df %>% filter(PC1 < 0) %>%
+ggplot(., aes(x = word, y = PC1, fill = PC1 > 0)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  geom_segment(aes(x = word, xend = word,
+                   y = 0, 
+                   yend = ifelse(PC1 > 0, -0.1 * max(abs(PC1)), 0.1 * max(abs(PC1)))),
+               color = "gray60", linetype = "dashed", linewidth = 0.4) +
+  geom_text(aes(label = word,
+                y = ifelse(PC1 > 0, -0.1 * max(abs(PC1)), 0.1 * max(abs(PC1)))),
+            angle = 90,
+            hjust = 0,
+            size = 6) +
+  scale_y_continuous(limits = c(-55,75)) + 
+  labs(title = "PCA Embeddings: MeSH",
+       x = "Top 15 Neg.", y = "PC1") +
+  scale_fill_manual(values = c("#2166AC")) + 
+  theme_classic() +
+  theme(
+    panel.grid.major.y = element_line(color = "grey80", size = 0.4),
+    panel.grid.minor.y = element_line(color = "grey90", size = 0.4)) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+    axis.text.y = element_text(colour = "black", size = 16),
+    plot.title = element_text(colour = "black", size = 16, hjust = 0),
+    axis.title.x = element_text(colour = "black", size = 16, vjust = 0.05),
+    axis.title.y = element_text(colour = "black", size = 16))
+
+PC_mesh_plot = PC1_mesh_bottom + PC1_mesh_top
+ggsave("PC_mesh_plot.svg", PC_mesh_plot, height = 5, width = 9)
+```
+#PCA scatter
+```{r}
+# Get top and bottom 10 by PC1
+top15_ids <- rd1 %>% arrange(desc(PC1)) %>% slice_head(n = 15) %>% pull(word)
+bottom15_ids <- rd1 %>% arrange(PC1) %>% slice_head(n = 15) %>% pull(word)
+other_words <- c("neurocognitive", "eye", "tooth", "nerve")
+
+# Add highlight group and selective labels
+pca_df <- rd1 %>%
+  mutate(highlight_group = case_when(
+    word %in% top15_ids ~ "Top 15 PC1",
+    word %in% bottom15_ids ~ "Bottom 15 PC1",
+    word %in% other_words ~ "Selected PC2",
+    TRUE ~ "Other"
+  ),
+  label = ifelse(word %in% c("breast", "neoplasms", "adenocarcinoma", "oxaliplatin","rectal","diabetes", "heart", "prostatic", "heart","neurocognitive", "eye", "tooth", "nerve"), word, NA))
+
+PCA_mesh_scatter = ggplot(pca_df, aes(x = PC1, y = PC2)) +
+  geom_point(aes(color = highlight_group), size = 2.5, alpha = 0.8) +
+  scale_color_manual(values = c(
+    "Top 15 PC1" = "#d62728", 
+    "Bottom 15 PC1" = "#1f77b4",
+    "Selected PC2" = "#495",
+    "Other" = "gray80"
+  )) +
+  geom_label_repel(aes(label = label, color = highlight_group), size = 5, na.rm = TRUE,alpha = 0.75,box.padding = 0.1, point.padding = 0.1) +
+  labs(title = "PCA: MeSH",
+       x = "PC1", y = "PC2", color = "Group") +
+  theme_classic() + 
+  theme(legend.position = "none") +
+  theme(axis.text.x = element_text(colour="black", size = 16))  +
+  theme(axis.text.y = element_text(colour="black",size = 16)) + 
+  theme(plot.title = element_text(colour="black", size=16,hjust = 0, vjust=0)) +
+  theme(axis.title.x = element_text(colour="black", size=16)) +
+  theme(axis.title.y = element_text(colour="black", size=16)) 
+
+ggsave("PCA_mesh_scatter.svg", PCA_mesh_scatter, height = 4, width = 4)
+
+```
+
+
+
