@@ -1,0 +1,67 @@
+R version 4.3.1 (2023-06-16)
+Platform: aarch64-apple-darwin20 (64-bit)
+Running under: macOS 15.4.1
+
+Matrix products: default
+BLAS:   /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libBLAS.dylib 
+LAPACK: /Library/Frameworks/R.framework/Versions/4.3-arm64/Resources/lib/libRlapack.dylib;  LAPACK version 3.11.0
+
+locale:
+[1] en_US.UTF-8/en_US.UTF-8/en_US.UTF-8/C/en_US.UTF-8/en_US.UTF-8
+
+time zone: America/Edmonton
+tzcode source: internal
+
+attached base packages:
+[1] stats     graphics  grDevices utils     datasets  methods   base     
+
+other attached packages:
+ [1] ggbump_0.1.0               circlize_0.4.16            viridis_0.6.5              viridisLite_0.4.2          tibble_3.2.1              
+ [6] RColorBrewer_1.1-3         rnaturalearthdata_1.0.0    rnaturalearth_1.0.1        sf_1.0-20                  scales_1.3.0              
+[11] rworldmap_1.3-8            sp_2.2-0                   gtsummary_2.2.0            tableone_0.13.2            shiny_1.10.0              
+[16] shinydashboard_0.7.3       htmlwidgets_1.6.4          networkD3_0.4.1            ggraph_2.2.1               tidygraph_1.3.1           
+[21] igraph_2.1.4               tidyr_1.3.1                data.table_1.17.0          dbscan_1.2.2               factoextra_1.0.7          
+[26] plotly_4.10.4              patchwork_1.3.0            ggpubr_0.6.0               progress_1.2.3             stringr_1.5.1             
+[31] purrr_1.0.4                rsample_1.3.0              text2vec_0.6.4             mltools_0.3.5              textrecipes_1.1.0         
+[36] recipes_1.3.0              dplyr_1.1.4                glmnet_4.1-8               Matrix_1.6-1.1             quanteda.textmodels_0.9.10
+[41] readtext_0.91              quanteda.textstats_0.97.2  caret_7.0-1                keras3_1.3.0               keras_2.15.0              
+[46] reticulate_1.42.0          ggplot2_3.5.2              reshape2_1.4.4             topicmodels_0.2-17         flextable_0.9.7           
+[51] ldatuning_1.0.2            lda_1.5.2                  NMF_0.28                   Biobase_2.62.0             BiocGenerics_0.48.1       
+[56] cluster_2.1.8.1            rngtools_1.5.2             registry_0.5-1             seededlda_1.4.2            umap_0.2.10.0             
+[61] tidytext_0.4.2             quanteda_4.2.0             Rmisc_1.5.1                plyr_1.8.9                 lattice_0.22-7            
+[66] tensorflow_2.16.0         
+
+loaded via a namespace (and not attached):
+  [1] IRanges_2.36.0          nnet_7.3-20             Biostrings_2.70.3       vctrs_0.6.5             digest_0.6.37           png_0.1-8              
+  [7] shape_1.4.6.1           proxy_0.4-27            ggrepel_0.9.6           tfruns_1.5.3            corrplot_0.95           parallelly_1.43.0      
+ [13] MASS_7.3-60.0.1         fontLiberation_0.1.0    httpuv_1.6.16           foreach_1.5.2           qvalue_2.34.0           withr_3.0.2            
+ [19] xfun_0.52               ggfun_0.1.8             survival_3.8-3          memoise_2.0.1           proxyC_0.4.1            ggbeeswarm_0.7.2       
+ [25] systemfonts_1.2.2       GlobalOptions_0.1.2     ragg_1.4.0              tidytree_0.4.6          Formula_1.2-5           prettyunits_1.2.0      
+ [31] KEGGREST_1.42.0         promises_1.3.2          httr_1.4.7              rstatix_0.7.2           stopwords_2.3           globals_0.17.0         
+ [37] rstudioapi_0.17.1       units_0.8-7             generics_0.1.3          DOSE_3.28.2             base64enc_0.1-3         fields_16.3.1          
+ [43] S4Vectors_0.40.2        mitools_2.4             zlibbioc_1.48.2         polyclip_1.10-7         GenomeInfoDbData_1.2.11 lgr_0.4.4              
+ [49] xtable_1.8-4            doParallel_1.0.17       evaluate_1.0.3          hms_1.1.3               colorspace_2.1-1        NLP_0.3-2              
+ [55] float_0.3-3             magrittr_2.0.3          later_1.4.2             modeltools_0.2-23       ggtree_3.10.1           future.apply_1.11.3    
+ [61] dotty_0.1.0             survey_4.4-2            shadowtext_0.1.4        cowplot_1.1.3           ggupset_0.4.1           class_7.3-23           
+ [67] pillar_1.10.2           gghighlight_0.4.1       nlme_3.1-168            iterators_1.0.14        gridBase_0.4-7          compiler_4.3.1         
+ [73] RSpectra_0.16-2         stringi_1.8.7           gower_1.0.2             tokenizers_0.3.0        lubridate_1.9.4         crayon_1.5.3           
+ [79] abind_1.4-8             rsparse_0.5.3           gridGraphics_0.5-1      terra_1.8-42            graphlayouts_1.2.2      bit_4.6.0              
+ [85] fastmatch_1.1-6         whisker_0.4.1           codetools_0.2-20        textshaping_1.0.0       openssl_2.3.2           slam_0.1-55            
+ [91] e1071_1.7-16            mlr3measures_1.0.0      tm_0.7-16               mime_0.13               splines_4.3.1           Rcpp_1.0.14            
+ [97] HDO.db_0.99.1           utf8_1.2.4              knitr_1.50              blob_1.2.4              here_1.0.1              fs_1.6.6               
+[103] listenv_0.9.1           checkmate_2.3.2         openxlsx_4.2.8          ggsignif_0.6.4          ggplotify_0.1.2         svglite_2.1.3          
+[109] nsyllable_1.0.1         tweenr_2.0.3            pkgconfig_2.0.3         pheatmap_1.0.12         tools_4.3.1             cachem_1.1.0           
+[115] RhpcBLASctl_0.23-42     RSQLite_2.3.9           DBI_1.2.3               fastmap_1.2.0           rmarkdown_2.29          grid_4.3.1             
+[121] broom_1.0.8             officer_0.6.8           BiocManager_1.30.25     dotCall64_1.2           carData_3.0-5           rpart_4.1.24           
+[127] farver_2.1.2            scatterpie_0.2.4        yaml_2.3.10             cli_3.6.4               stats4_4.3.1            lifecycle_1.0.4        
+[133] rsconnect_1.3.4         askpass_1.2.1           lava_1.8.1              backports_1.5.0         BiocParallel_1.36.0     timechange_0.3.0       
+[139] gtable_0.3.6            parallel_4.3.1          pROC_1.18.5             ape_5.8-1               SnowballC_0.7.1         jsonlite_2.0.0         
+[145] bitops_1.0-9            bit64_4.6.0-1           yulab.utils_0.2.0       zip_2.3.2               janeaustenr_1.0.0       GOSemSim_2.28.1        
+[151] mlapi_0.1.1             zeallot_0.1.0           timeDate_4041.110       lazyeval_0.2.2          htmltools_0.5.8.1       enrichplot_1.22.0      
+[157] GO.db_3.18.0            data.tree_1.1.0         glue_1.8.0              spam_2.11-1             XVector_0.42.0          gdtools_0.4.2          
+[163] RCurl_1.98-1.17         rprojroot_2.0.4         treeio_1.26.0           classInt_0.4-11         gridExtra_2.3           R6_2.6.1               
+[169] labeling_0.4.3          forcats_1.0.0           aplot_0.2.5             GenomeInfoDb_1.38.8     ipred_0.9-15            mlr3misc_0.16.0        
+[175] tidyselect_1.2.1        vipor_0.4.7             maps_3.4.2.1            raster_3.6-32           ggforce_0.4.2           xml2_1.3.8             
+[181] fontBitstreamVera_0.1.1 car_3.1-3               AnnotationDbi_1.64.1    future_1.40.0           ModelMetrics_1.2.2.2    KernSmooth_2.23-26     
+[187] munsell_0.5.1           furrr_0.3.1             fontquiver_0.2.1        fgsea_1.28.0            rlang_1.1.6             uuid_1.2-1             
+[193] remotes_2.5.0           hardhat_1.4.1           beeswarm_0.4.0          prodlim_2024.06.25     
